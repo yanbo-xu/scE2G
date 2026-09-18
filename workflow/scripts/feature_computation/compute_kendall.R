@@ -166,6 +166,77 @@ map_gene_names <- function(rna_matrix, df_exp, gene_gtf_path, abc_genes_path){
 
 	return(list(rna_matrix_filt, df_exp_filt))
 }
+
+normalize_ensembl_ids <- function(gene_ids) {
+  sub("\\.\\d+$", "", as.character(gene_ids))
+}
+
+validate_ensembl_ids <- function(gene_ids, source_name) {
+  gene_ids <- normalize_ensembl_ids(gene_ids)
+  missing_ids <- is.na(gene_ids) | !nzchar(trimws(gene_ids))
+  if (any(missing_ids)) {
+    stop(
+      source_name, " contains ", sum(missing_ids),
+      " missing or empty Ensembl IDs after normalization."
+    )
+  }
+
+  duplicate_ids <- unique(gene_ids[duplicated(gene_ids)])
+  if (length(duplicate_ids) > 0) {
+    stop(
+      source_name, " contains duplicate Ensembl IDs after normalization: ",
+      paste(head(duplicate_ids, 5), collapse = ", ")
+    )
+  }
+
+  gene_ids
+}
+
+# Map configured H5AD feature IDs directly to the ABC gene reference. The
+# positional subset preserves the count matrix's original feature order.
+map_h5ad_gene_ids <- function(rna_matrix,
+                              df_exp,
+                              rna_gene_ids,
+                              abc_genes_path) {
+  if (length(rna_gene_ids) != nrow(rna_matrix)) {
+    stop(
+      "Configured H5AD gene IDs contain ", length(rna_gene_ids),
+      " entries, but the RNA count matrix has ", nrow(rna_matrix),
+      " features."
+    )
+  }
+
+  rna_gene_ids <- validate_ensembl_ids(
+    rna_gene_ids,
+    "Configured H5AD gene IDs"
+  )
+  abc_genes <- fread(
+    abc_genes_path,
+    col.names = c(
+      "chr", "start", "end", "name", "score", "strand", "Ensembl_ID",
+      "gene_type"
+    )
+  ) %>%
+    dplyr::select(name, Ensembl_ID) %>%
+    rename(abc_name = name)
+  abc_genes$Ensembl_ID <- validate_ensembl_ids(
+    abc_genes$Ensembl_ID,
+    "ABC gene BED Ensembl_ID values"
+  )
+
+  abc_indices <- match(rna_gene_ids, abc_genes$Ensembl_ID)
+  matching_rows <- which(!is.na(abc_indices))
+  rna_matrix_filt <- rna_matrix[matching_rows, , drop = FALSE]
+  df_exp_filt <- df_exp[matching_rows, , drop = FALSE]
+  abc_names <- abc_genes$abc_name[abc_indices[matching_rows]]
+  rownames(rna_matrix_filt) <- abc_names
+  rownames(df_exp_filt) <- abc_names
+
+  message("Number of genes in RNA matrix before matching: ", nrow(rna_matrix))
+  message("Number of genes in RNA matrix after matching: ", nrow(rna_matrix_filt))
+
+  list(rna_matrix_filt, df_exp_filt)
+}
 ## -------------------------------------------------------------------------------------------------
 
 # Import parameters from Snakemake
@@ -174,6 +245,7 @@ atac_matrix_path = snakemake@input$atac_matrix
 rna_matrix_path = snakemake@input$rna_matrix
 gene_gtf_path = snakemake@params$gene_gtf
 abc_genes_path = snakemake@params$abc_genes
+rna_gene_id_column = snakemake@params$rna_gene_id_column
 python_script_path = snakemake@params$python_script
 kendall_predictions_path = snakemake@output$kendall_predictions
 umi_count_path = snakemake@output$umi_count
@@ -193,8 +265,19 @@ matrix.atac = BinarizeCounts(matrix.atac_count)
 rm(matrix.atac_count)
 
 # Load scRNA matrix
-if (file_ext(rna_matrix_path) %in% c("h5ad", "h5")) {
-  matrix.rna_count <- t(read_h5ad(rna_matrix_path)$X)
+is_h5ad <- file_ext(rna_matrix_path) %in% c("h5ad", "h5")
+if (is_h5ad) {
+  rna_h5ad <- read_h5ad(rna_matrix_path)
+  matrix.rna_count <- t(rna_h5ad$X)
+  if (!is.null(rna_gene_id_column) && nzchar(trimws(rna_gene_id_column))) {
+    if (!(rna_gene_id_column %in% colnames(rna_h5ad$var))) {
+      stop(
+        "Configured rna_gene_id_column '", rna_gene_id_column,
+        "' was not found in H5AD var."
+      )
+    }
+    rna_gene_ids <- rna_h5ad$var[[rna_gene_id_column]]
+  }
 } else if (file_ext(rna_matrix_path) == "gz") {
   matrix.rna_count = read.csv(rna_matrix_path,
                               row.names = 1,
@@ -204,6 +287,13 @@ if (file_ext(rna_matrix_path) %in% c("h5ad", "h5")) {
 	matrix.rna_count = Read10X(rna_matrix_path, gene.column=1)
 } else {
 	message("Please provide a supported RNA matrix format.")
+}
+
+if (!is_h5ad && !is.null(rna_gene_id_column) && nzchar(trimws(rna_gene_id_column))) {
+  stop(
+    "rna_gene_id_column is supported only for H5AD RNA input; received '",
+    rna_gene_id_column, "'."
+  )
 }
 
 matrix.rna_count = matrix.rna_count[,colnames(matrix.atac)]
@@ -231,8 +321,25 @@ df.exp_inf = data.frame(mean_log_normalized_rna = rowMeans(matrix.rna),
                         RnaPseudobulkTPM =  rowSums(matrix.rna_count) / sum(matrix.rna_count)*10^6,
                         row.names = rownames(matrix.rna_count))
 
-# subset (normalized) RNA matrix and map names to ABC gene reference; also subset the gene expression measurements
-gene_filtered_out = map_gene_names(matrix.rna, df.exp_inf, gene_gtf_path, abc_genes_path)
+# Subset (normalized) RNA matrix and map names to the ABC gene reference; also
+# subset the gene expression measurements. An explicitly configured H5AD var
+# column uses stable Ensembl IDs directly; otherwise preserve the legacy GTF
+# gene-name mapping path.
+if (is_h5ad && !is.null(rna_gene_id_column) && nzchar(trimws(rna_gene_id_column))) {
+  gene_filtered_out = map_h5ad_gene_ids(
+    matrix.rna,
+    df.exp_inf,
+    rna_gene_ids,
+    abc_genes_path
+  )
+} else {
+  gene_filtered_out = map_gene_names(
+    matrix.rna,
+    df.exp_inf,
+    gene_gtf_path,
+    abc_genes_path
+  )
+}
 matrix.rna_filt <- gene_filtered_out[[1]]
 df.exp_filt <-  gene_filtered_out[[2]]
 

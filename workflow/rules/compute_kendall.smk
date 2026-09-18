@@ -22,6 +22,7 @@ rule compute_kendall:
 	params:
 		gene_gtf = config["gene_annotations"],
 		abc_genes = config['gene_TSS500'],
+		rna_gene_id_column = config.get("rna_gene_id_column", None),
 		python_script = os.path.join(SCRIPTS_DIR, "feature_computation", "compute_kendall.py")
 	output:
 		kendall_predictions = 
