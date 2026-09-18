@@ -21,6 +21,14 @@ WORKFLOW_DIR = os.path.dirname(str(workflow.current_basedir))
 # If results_dir is already an absolute path, this is a no-op
 config = make_paths_absolute(config, WORKFLOW_DIR)
 config["results_dir"] = os.path.join(WORKFLOW_DIR, config["results_dir"])
+LINKING_MODE = config.get("linking_mode", "sce2g")
+if LINKING_MODE not in {"sce2g", "arc"}:
+	raise ValueError(
+		"Unsupported linking_mode '{}'. Expected one of: sce2g, arc.".format(
+			LINKING_MODE
+		)
+	)
+config["linking_mode"] = LINKING_MODE
 
 ## Define global variables
 if "IGV_dir" in config:
@@ -71,7 +79,8 @@ BIOSAMPLE_DF = encode_e2g.ABC.enable_retry(
 	pd.read_table, 
 	func_args={'filepath_or_buffer': config["ABC_BIOSAMPLES"]}
 )
-BIOSAMPLE_DF = encode_e2g.expand_biosample_df(BIOSAMPLE_DF)
+if LINKING_MODE == "sce2g":
+	BIOSAMPLE_DF = encode_e2g.expand_biosample_df(BIOSAMPLE_DF)
 
 ## Include additional Snakemake rules
 include: os.path.join("rules", "frag_to_tagAlign.smk")
@@ -79,8 +88,9 @@ include: os.path.join("rules", "make_kendall_pairs.smk")
 include: os.path.join("rules", "generate_atac_matrix.smk")
 include: os.path.join("rules", "compute_kendall.smk")
 include: os.path.join("rules", "arc_e2g.smk")
-include: os.path.join("rules", "add_external_features.smk")
-include: os.path.join("rules", "sc_predictions.smk")
+if LINKING_MODE == "sce2g":
+	include: os.path.join("rules", "add_external_features.smk")
+	include: os.path.join("rules", "sc_predictions.smk")
 include: os.path.join("rules", "save_configs.smk")
 include: os.path.join("rules", "unit_tests.smk")
 
@@ -88,37 +98,47 @@ include: os.path.join("rules", "unit_tests.smk")
 ## Define the final outputs of the pipeline
 output_files = [os.path.join(RESULTS_DIR, "config", "expanded_biosample_config.tsv")]
 
-biosample_model = list(zip(BIOSAMPLE_DF["biosample"], BIOSAMPLE_DF["model_dir_base"]))
-biosample_model_threshold = list(zip(BIOSAMPLE_DF["biosample"], BIOSAMPLE_DF["model_dir_base"], BIOSAMPLE_DF["model_threshold"]))
+if LINKING_MODE == "sce2g":
+	biosample_model = list(zip(BIOSAMPLE_DF["biosample"], BIOSAMPLE_DF["model_dir_base"]))
+	biosample_model_threshold = list(zip(BIOSAMPLE_DF["biosample"], BIOSAMPLE_DF["model_dir_base"], BIOSAMPLE_DF["model_threshold"]))
 
-sc_e2g_predictions = [os.path.join(RESULTS_DIR, biosample, model_name, "scE2G_predictions.tsv.gz") for biosample,model_name in biosample_model]
-prediction_stats = [os.path.join(RESULTS_DIR, biosample, model_name, f"scE2G_predictions_threshold{threshold}_stats.tsv") for biosample,model_name,threshold in biosample_model_threshold]
-gene_lists = [os.path.join(RESULTS_DIR, biosample, model_name, "scE2G_gene_list.tsv.gz") for biosample,model_name in biosample_model]
-element_lists = [os.path.join(RESULTS_DIR, biosample, model_name, "scE2G_element_list.tsv.gz") for biosample,model_name in biosample_model]
-all_qc = os.path.join(RESULTS_DIR, "qc_plots", "predictions_qc_report.html")
+	sc_e2g_predictions = [os.path.join(RESULTS_DIR, biosample, model_name, "scE2G_predictions.tsv.gz") for biosample,model_name in biosample_model]
+	prediction_stats = [os.path.join(RESULTS_DIR, biosample, model_name, f"scE2G_predictions_threshold{threshold}_stats.tsv") for biosample,model_name,threshold in biosample_model_threshold]
+	gene_lists = [os.path.join(RESULTS_DIR, biosample, model_name, "scE2G_gene_list.tsv.gz") for biosample,model_name in biosample_model]
+	element_lists = [os.path.join(RESULTS_DIR, biosample, model_name, "scE2G_element_list.tsv.gz") for biosample,model_name in biosample_model]
+	all_qc = os.path.join(RESULTS_DIR, "qc_plots", "predictions_qc_report.html")
 
-bedpe_files = [os.path.join(IGV_DIR, biosample, model_name, f"scE2G_predictions_threshold{threshold}.bedpe") for biosample,model_name,threshold in biosample_model_threshold]
-atac_bw = [os.path.join(IGV_DIR, biosample, "ATAC.bw") for biosample in BIOSAMPLE_DF["biosample"]]
-atac_bw_norm = [os.path.join(IGV_DIR, biosample, "ATAC_norm.bw") for biosample in BIOSAMPLE_DF["biosample"]]
+	bedpe_files = [os.path.join(IGV_DIR, biosample, model_name, f"scE2G_predictions_threshold{threshold}.bedpe") for biosample,model_name,threshold in biosample_model_threshold]
+	atac_bw = [os.path.join(IGV_DIR, biosample, "ATAC.bw") for biosample in BIOSAMPLE_DF["biosample"]]
+	atac_bw_norm = [os.path.join(IGV_DIR, biosample, "ATAC_norm.bw") for biosample in BIOSAMPLE_DF["biosample"]]
 
-model_perf = os.path.join(RESULTS_DIR, "crispr_benchmarking_performance_summary.tsv")
+	model_perf = os.path.join(RESULTS_DIR, "crispr_benchmarking_performance_summary.tsv")
 
+	## Choose relevant output files
+	output_files.extend(sc_e2g_predictions)
+	output_files.extend(prediction_stats)
+	output_files.append(gene_lists)
+	output_files.append(element_lists)
+	output_files.append(all_qc)
 
+	if config["make_IGV_tracks"]:
+		output_files.extend(bedpe_files)
+		#output_files.extend(atac_bw) # just output normalize!
+		output_files.extend(atac_bw_norm)
 
-## Choose relevant output files
-output_files.extend(sc_e2g_predictions)
-output_files.extend(prediction_stats)
-output_files.append(gene_lists)
-output_files.append(element_lists)
-output_files.append(all_qc)
-
-if config["make_IGV_tracks"]:
-	output_files.extend(bedpe_files)
-	#output_files.extend(atac_bw) # just output normalize!
-	output_files.extend(atac_bw_norm)
-
-if config["benchmark_performance"]:
- 	output_files.append(model_perf)
+	if config["benchmark_performance"]:
+		output_files.append(model_perf)
+else:
+	arc_predictions = [
+		os.path.join(
+			RESULTS_DIR,
+			biosample,
+			"ARC",
+			"EnhancerPredictionsAllPutative_ARC.tsv.gz",
+		)
+		for biosample in BIOSAMPLE_DF["biosample"]
+	]
+	output_files.extend(arc_predictions)
 
 rule all:
 	input: 

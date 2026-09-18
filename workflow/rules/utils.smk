@@ -67,8 +67,14 @@ def get_e2g_config(config, encode_re2g_dir):
 	e2g_config["ABC_BIOSAMPLES"] = config["ABC_BIOSAMPLES"]
 	e2g_config["IGV_dir"] = IGV_DIR
 	e2g_config["results_dir"] = config["results_dir"]
-	e2g_config["model_dir"] = config["model_dir"]
-	e2g_config["final_score_col"] = config["final_score_col"]
+	if config["linking_mode"] == "sce2g":
+		e2g_config["model_dir"] = config["model_dir"]
+		e2g_config["final_score_col"] = config["final_score_col"]
+	else:
+		if "model_dir" in config:
+			e2g_config["model_dir"] = config["model_dir"]
+		if "final_score_col" in config:
+			e2g_config["final_score_col"] = config["final_score_col"]
 
 	# If files specified in scE2G, update ENCODE_rE2G
 	if "gene_TSS500" in config:
@@ -83,12 +89,22 @@ def get_e2g_config(config, encode_re2g_dir):
 		e2g_config["regions_blocklist"] = config["regions_blocklist"]
 	if "macs2_genomesize" in config:
 		e2g_config["macs2_genomesize"] = config["macs2_genomesize"]
+
+	for attr in [
+		"linking_mode",
+		"rna_gene_id_column",
+		"abc_use_qnorm",
+		"external_peak_ignore_summits",
+		"external_peak_extend",
+	]:
+		if attr in config:
+			e2g_config[attr] = config[attr]
 	
 	return e2g_config
 
 # update scE2G config to have consistent gene reference files to E2G 
 def update_scE2G_config(config, e2g_config, encode_re2g_dir):
-	if "crispr_dataset" not in config:
+	if "crispr_dataset" not in config and config["linking_mode"] == "sce2g":
 		config["crispr_dataset"] = os.path.join(encode_re2g_dir, e2g_config["crispr_dataset"])
 	
 	if "gene_TSS500" not in config:
@@ -108,5 +124,3 @@ def get_abc_score_col(cluster):
 	else:
 		return "ABC.Score"
 		
-
-

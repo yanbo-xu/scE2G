@@ -37,28 +37,37 @@ rule save_reference_configs:
         # 4) augment biosample table
         df = params.biosample_config
 
-        # helper to construct file paths for each sample
-        def mkpaths(row):
-            biosample = row["biosample"]  # adjust to your column name
-            model_name = row["model_dir_base"]
-            threshold = row["model_threshold"]
-            out = {}
+        if params.sce2g_config["linking_mode"] == "arc":
+            df["arc_predictions"] = df["biosample"].apply(
+                lambda biosample: os.path.join(
+                    params.results_dir,
+                    biosample,
+                    "ARC",
+                    "EnhancerPredictionsAllPutative_ARC.tsv.gz",
+                )
+            )
+        else:
+            # helper to construct file paths for each sample
+            def mkpaths(row):
+                biosample = row["biosample"]  # adjust to your column name
+                model_name = row["model_dir_base"]
+                threshold = row["model_threshold"]
+                out = {}
 
-            # predictions
-            out["predictions_full"] = os.path.join(params.results_dir,
-                biosample, model_name, "scE2G_predictions.tsv.gz")
-            out["predictions_thresholded"] = os.path.join(params.results_dir,
-                biosample, model_name, f"scE2G_predictions_threshold{threshold}.tsv.gz")
-            
-            # optional genome‐browser track
-            if params.sce2g_config["make_IGV_tracks"]:
-                out["predictions_bedpe"] = os.path.join(params.igv_dir,
+                # predictions
+                out["predictions_full"] = os.path.join(params.results_dir,
+                    biosample, model_name, "scE2G_predictions.tsv.gz")
+                out["predictions_thresholded"] = os.path.join(params.results_dir,
                     biosample, model_name, f"scE2G_predictions_threshold{threshold}.tsv.gz")
-                out["ATAC_bw"] = os.path.join(params.igv_dir,
-                    biosample, "ATAC_norm.bw")
 
-            return pd.Series(out)
+                # optional genome‐browser track
+                if params.sce2g_config["make_IGV_tracks"]:
+                    out["predictions_bedpe"] = os.path.join(params.igv_dir,
+                        biosample, model_name, f"scE2G_predictions_threshold{threshold}.tsv.gz")
+                    out["ATAC_bw"] = os.path.join(params.igv_dir,
+                        biosample, "ATAC_norm.bw")
 
-        df = pd.concat([df, df.apply(mkpaths, axis=1)], axis=1)
+                return pd.Series(out)
+
+            df = pd.concat([df, df.apply(mkpaths, axis=1)], axis=1)
         df.to_csv(output.res_out, sep='\t', index=False)
-
